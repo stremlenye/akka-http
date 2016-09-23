@@ -8,7 +8,7 @@ package directives
 import java.io.File
 import java.net.{ URI, URL }
 import java.nio.file.Files._
-import java.nio.file.{ Path, Paths }
+import java.nio.file.{ LinkOption, Path, Paths }
 import java.nio.file.attribute.BasicFileAttributes
 
 import akka.http.javadsl.{ marshalling, model }
@@ -149,14 +149,26 @@ trait FileAndResourceDirectives {
    *
    * @group fileandresource
    */
-  def getFromDirectory(directoryName: String)(implicit resolver: ContentTypeResolver): Route = {
-    val base = withTrailingSlash(directoryName)
-    extractUnmatchedPath { path ⇒
+  def getFromDirectory(directoryName: String)(implicit resolver: ContentTypeResolver): Route =
+    getFromDirectory(Paths.get(withTrailingSlash(directoryName)))(resolver)
+
+  /**
+   * Completes GET requests with the content of a file underneath the given directory.
+   * If the file cannot be read the Route rejects the request.
+   *
+   * @group fileandresource
+   */
+  def getFromDirectory(path: Path)(implicit resolver: ContentTypeResolver): Route = {
+    val base = path.toRealPath() // follow links
+    extractUnmatchedPath { unmatchedPath ⇒
       extractLog { log ⇒
-        fileSystemPath(base, path, log) match {
-          case ""       ⇒ reject
-          case fileName ⇒ getFromFile(fileName)
-        }
+        val path = if (unmatchedPath.startsWithSlash) unmatchedPath.tail else unmatchedPath
+        val file = base.resolve(path.toString)
+        if (exists(file, LinkOption.NOFOLLOW_LINKS) && file.toRealPath().startsWith(base)) // FIXME: optional symlinks
+          // TODO log
+          getFromFile(file)
+        else
+          reject
       }
     }
   }

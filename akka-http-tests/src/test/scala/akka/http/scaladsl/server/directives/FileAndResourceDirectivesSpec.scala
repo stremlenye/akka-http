@@ -28,6 +28,8 @@ class FileAndResourceDirectivesSpec extends RoutingSpec with Inspectors with Ins
   // operations touch files, can be randomly hit by slowness
   implicit val routeTestTimeout = RouteTestTimeout(3.seconds)
 
+  val base = Paths.get(getClass.getClassLoader.getResource("").toURI)
+
   override def testConfigSource = "akka.http.routing.range-coalescing-threshold = 1"
 
   "getFromFile" should {
@@ -125,6 +127,39 @@ class FileAndResourceDirectivesSpec extends RoutingSpec with Inspectors with Ins
           responseAs[String] shouldEqual "456"
         }
       } finally rm(file)
+    }
+  }
+
+  "getFromDirectory" should {
+    def getFromDir(directory: String) = getFromDirectory(base.resolve(directory))
+
+    "reject non-GET requests" in {
+      Put() ~> getFromDir("someDir") ~> check { handled shouldEqual false }
+    }
+    "reject requests to non-existing files" in {
+      Get("nonExistentFile") ~> getFromDir("subDirectory") ~> check { handled shouldEqual false }
+    }
+    "reject requests to directories" in {
+      Get("sub") ~> getFromDir("someDir") ~> check { handled shouldEqual false }
+    }
+    "reject path traversal attempts" in {
+      def requestUri(req: HttpRequest): String = req.uri.toString
+      //val route = DebuggingDirectives.logRequest(("xxx", Logging.WarningLevel)) { getFromDirectory("someDir/sub") }
+      val route = DebuggingDirectives.logRequest(requestUri _) { getFromDir("someDir/sub") }
+
+      Get("../fileA.txt") ~> route ~> check { handled shouldEqual false }
+      Get("%5c../fileA.txt") ~> route ~> check { handled shouldEqual false }
+      Get("../fileA.txt") ~> route ~> check { handled shouldEqual false }
+    }
+    "return the file content with the MediaType matching the file extension" in {
+      Get("fileA.txt") ~> getFromDir("someDir") ~> check {
+        mediaType shouldEqual `text/plain`
+        charsetOption shouldEqual Some(HttpCharsets.`UTF-8`)
+        responseAs[String] shouldEqual "123"
+        val lastModified =
+          readAttributes(base.resolve("someDir/fileA.txt"), classOf[BasicFileAttributes]).lastModifiedTime().toMillis
+        headers should contain(`Last-Modified`(DateTime(lastModified)))
+      }
     }
   }
 
@@ -237,7 +272,6 @@ class FileAndResourceDirectivesSpec extends RoutingSpec with Inspectors with Ins
   }
 
   "listDirectoryContents" should {
-    val base = Paths.get(getClass.getClassLoader.getResource("").toURI)
     createDirectories(base.resolve("subDirectory/emptySub"))
     def eraseDateTime(s: String) = s.replaceAll("""\d\d\d\d-\d\d-\d\d \d\d:\d\d:\d\d""", "xxxx-xx-xx xx:xx:xx")
     implicit val settings = RoutingSettings.default.withRenderVanityFooter(false)
