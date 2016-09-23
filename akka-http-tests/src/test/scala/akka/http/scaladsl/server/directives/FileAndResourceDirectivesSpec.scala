@@ -5,7 +5,7 @@
 package akka.http.scaladsl.server
 package directives
 
-import java.nio.file.Files._
+import java.nio.file.Files.{ delete ⇒ rm, _ }
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 
@@ -117,13 +117,30 @@ class FileAndResourceDirectivesSpec extends RoutingSpec with Inspectors with Ins
       Get("sub") ~> getFromDir("someDir") ~> check { handled shouldEqual false }
     }
     "reject path traversal attempts" in {
-      def requestUri(req: HttpRequest): String = req.uri.toString
-      //val route = DebuggingDirectives.logRequest(("xxx", Logging.WarningLevel)) { getFromDirectory("someDir/sub") }
-      val route = DebuggingDirectives.logRequest(requestUri _) { getFromDir("someDir/sub") }
-
-      Get("../fileA.txt") ~> route ~> check { handled shouldEqual false }
-      Get("%5c../fileA.txt") ~> route ~> check { handled shouldEqual false }
-      Get("../fileA.txt") ~> route ~> check { handled shouldEqual false }
+      val route = getFromDir("someDir/sub")
+      Get("file.html") ~> route ~> check { handled shouldEqual true }
+      def shouldReject(prefix: String) = Get(prefix + "fileA.txt") ~> route ~> check { handled shouldEqual false }
+      shouldReject("../")
+      shouldReject("%5c../")
+      shouldReject("../")
+      shouldReject("%2e%2e%2f")
+      shouldReject("%2e%2e/")
+      shouldReject("..%2f")
+      shouldReject("%2e%2e%5c")
+      shouldReject("%2e%2e\\")
+      shouldReject("..%5c")
+      shouldReject("..%255c")
+      shouldReject("..%c0%af")
+      shouldReject("..%c1%9c")
+    }
+    "reject requests to symlinks" in {
+      val link = base.resolve("someDir/sub/file.lnk")
+      val route = getFromDir("someDir/sub")
+      try {
+        // FIXME follow link setting
+        Get("file.html") ~> route ~> check { handled shouldEqual true }
+        Get("fileA.lnk") ~> route ~> check { handled shouldEqual false }
+      } finally rm(link)
     }
     "return the file content with the MediaType matching the file extension" in {
       Get("fileA.txt") ~> getFromDir("someDir") ~> check {
